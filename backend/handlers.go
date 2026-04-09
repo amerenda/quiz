@@ -343,29 +343,31 @@ func handleGetResults(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check if results are hidden
-	var hidden bool
-	db.QueryRow(ctx, `SELECT hidden FROM quizzes WHERE id = $1`, quizID).Scan(&hidden)
+	var hidden, adminUnlocked bool
+	db.QueryRow(ctx, `SELECT hidden, admin_unlocked FROM quizzes WHERE id = $1`, quizID).Scan(&hidden, &adminUnlocked)
 	if hidden {
 		writeJSON(w, 423, map[string]any{"hidden": true, "reason": "results locked by admin"})
 		return
 	}
 
-	// Check if any participant said yes to everything (no hard_no answers)
-	var allYesExists bool
-	db.QueryRow(ctx, `
-		SELECT EXISTS(
-			SELECT 1 FROM participants p
-			WHERE p.quiz_id = $1
-			  AND p.submitted_at IS NOT NULL
-			  AND NOT EXISTS (
-			      SELECT 1 FROM responses r WHERE r.participant_id = p.id AND r.answer = 'hard_no'
-			  )
-		)
-	`, quizID).Scan(&allYesExists)
-	if allYesExists {
-		db.Exec(ctx, `UPDATE quizzes SET hidden = true WHERE id = $1`, quizID)
-		writeJSON(w, 423, map[string]any{"hidden": true, "reason": "one participant answered yes to everything"})
-		return
+	// Check if any participant said yes to everything — skip if admin already unlocked
+	if !adminUnlocked {
+		var allYesExists bool
+		db.QueryRow(ctx, `
+			SELECT EXISTS(
+				SELECT 1 FROM participants p
+				WHERE p.quiz_id = $1
+				  AND p.submitted_at IS NOT NULL
+				  AND NOT EXISTS (
+				      SELECT 1 FROM responses r WHERE r.participant_id = p.id AND r.answer = 'hard_no'
+				  )
+			)
+		`, quizID).Scan(&allYesExists)
+		if allYesExists {
+			db.Exec(ctx, `UPDATE quizzes SET hidden = true WHERE id = $1`, quizID)
+			writeJSON(w, 423, map[string]any{"hidden": true, "reason": "one participant answered yes to everything"})
+			return
+		}
 	}
 
 	rows, err := db.Query(ctx, `
@@ -488,7 +490,11 @@ func handleAdminUpdateQuiz(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Hidden != nil {
-		if _, err := db.Exec(ctx, `UPDATE quizzes SET hidden = $1 WHERE id = $2`, *req.Hidden, quizID); err != nil {
+		// When unlocking, set admin_unlocked = true to prevent the all-yes check from re-locking
+		if _, err := db.Exec(ctx,
+			`UPDATE quizzes SET hidden = $1, admin_unlocked = CASE WHEN NOT $1 THEN true ELSE admin_unlocked END WHERE id = $2`,
+			*req.Hidden, quizID,
+		); err != nil {
 			http.Error(w, "server error", http.StatusInternalServerError)
 			return
 		}

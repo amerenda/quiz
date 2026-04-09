@@ -68,6 +68,7 @@ func migrateDB(ctx context.Context) error {
 		)`,
 		`ALTER TABLE quizzes ADD COLUMN IF NOT EXISTS title TEXT`,
 		`ALTER TABLE quizzes ADD COLUMN IF NOT EXISTS hidden BOOLEAN NOT NULL DEFAULT FALSE`,
+		`ALTER TABLE quizzes ADD COLUMN IF NOT EXISTS admin_unlocked BOOLEAN NOT NULL DEFAULT FALSE`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS quizzes_title_unique ON quizzes(lower(title)) WHERE title IS NOT NULL`,
 	}
 
