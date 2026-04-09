@@ -1,0 +1,235 @@
+name: Build and Push
+
+on:
+  push:
+    branches: [main]
+    tags: ['release/v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  IMAGE: amerenda/quiz
+  GITOPS_REPO: amerenda/k3s-dean-gitops
+
+jobs:
+  changes:
+    name: Detect changes
+    runs-on: arc-runner-set
+    outputs:
+      backend: ${{ steps.filter.outputs.backend }}
+      frontend: ${{ steps.filter.outputs.frontend }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - name: Detect changed components
+        id: filter
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]] || [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            echo "backend=true" >> "$GITHUB_OUTPUT"
+            echo "frontend=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          CHANGED=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || echo "")
+          check() { echo "$CHANGED" | grep -qE "$1" && echo "true" || echo "false"; }
+          echo "backend=$(check '^backend/')" >> "$GITHUB_OUTPUT"
+          echo "frontend=$(check '^frontend/')" >> "$GITHUB_OUTPUT"
+          cat "$GITHUB_OUTPUT"
+
+  set-tag:
+    if: github.event_name != 'pull_request'
+    runs-on: arc-runner-set
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      pr_prefix: ${{ steps.tag.outputs.pr_prefix }}
+    steps:
+      - name: Set image tag
+        id: tag
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/release/* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/release/}"
+            echo "tag=${VERSION}" >> "$GITHUB_OUTPUT"
+            echo "pr_prefix=release" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+            echo "pr_prefix=deploy" >> "$GITHUB_OUTPUT"
+          fi
+
+  build-amd64:
+    name: Build amd64
+    needs: [changes, set-tag]
+    if: |
+      always() &&
+      github.event_name != 'pull_request' &&
+      needs.set-tag.result == 'success' &&
+      (needs.changes.outputs.backend == 'true' || needs.changes.outputs.frontend == 'true')
+    runs-on: arc-runner-set
+    env:
+      TAG: ${{ needs.set-tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Login to Docker Hub
+        run: echo "${DOCKERHUB_TOKEN}" | docker login -u "${DOCKERHUB_USERNAME}" --password-stdin
+      - name: Build and push backend (amd64)
+        if: needs.changes.outputs.backend == 'true'
+        run: |
+          docker build -t "${IMAGE}:backend-${TAG}-amd64" -f backend/Dockerfile .
+          docker push "${IMAGE}:backend-${TAG}-amd64"
+      - name: Build and push frontend (amd64)
+        if: needs.changes.outputs.frontend == 'true'
+        run: |
+          docker build -t "${IMAGE}:frontend-${TAG}-amd64" -f frontend/Dockerfile frontend
+          docker push "${IMAGE}:frontend-${TAG}-amd64"
+
+  build-arm64:
+    name: Build arm64
+    needs: [changes, set-tag]
+    if: |
+      always() &&
+      github.event_name != 'pull_request' &&
+      needs.set-tag.result == 'success' &&
+      (needs.changes.outputs.backend == 'true' || needs.changes.outputs.frontend == 'true')
+    runs-on: [self-hosted, mac-mini]
+    env:
+      TAG: ${{ needs.set-tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Login to Docker Hub
+        run: echo "${DOCKERHUB_TOKEN}" | docker login -u "${DOCKERHUB_USERNAME}" --password-stdin
+      - name: Build and push backend (arm64)
+        if: needs.changes.outputs.backend == 'true'
+        run: |
+          docker build -t "${IMAGE}:backend-${TAG}-arm64" -f backend/Dockerfile .
+          docker push "${IMAGE}:backend-${TAG}-arm64"
+      - name: Build and push frontend (arm64)
+        if: needs.changes.outputs.frontend == 'true'
+        run: |
+          docker build -t "${IMAGE}:frontend-${TAG}-arm64" -f frontend/Dockerfile frontend
+          docker push "${IMAGE}:frontend-${TAG}-arm64"
+
+  manifest:
+    needs: [changes, set-tag, build-amd64, build-arm64]
+    if: |
+      always() &&
+      needs.build-amd64.result == 'success' &&
+      needs.build-arm64.result == 'success'
+    runs-on: arc-runner-set
+    env:
+      TAG: ${{ needs.set-tag.outputs.tag }}
+    steps:
+      - name: Login to Docker Hub
+        run: echo "${DOCKERHUB_TOKEN}" | docker login -u "${DOCKERHUB_USERNAME}" --password-stdin
+      - name: Create multi-arch manifests
+        run: |
+          for COMPONENT in backend frontend; do
+            case "$COMPONENT" in
+              backend)  [[ "${{ needs.changes.outputs.backend }}" != "true" ]] && continue ;;
+              frontend) [[ "${{ needs.changes.outputs.frontend }}" != "true" ]] && continue ;;
+            esac
+            docker buildx imagetools create -t "${IMAGE}:${COMPONENT}-${TAG}" \
+              "${IMAGE}:${COMPONENT}-${TAG}-amd64" \
+              "${IMAGE}:${COMPONENT}-${TAG}-arm64"
+            docker buildx imagetools create -t "${IMAGE}:${COMPONENT}-latest" \
+              "${IMAGE}:${COMPONENT}-${TAG}-amd64" \
+              "${IMAGE}:${COMPONENT}-${TAG}-arm64"
+          done
+
+  deploy:
+    needs: [changes, set-tag, manifest]
+    if: |
+      always() &&
+      needs.manifest.result == 'success' &&
+      (needs.changes.outputs.backend == 'true' || needs.changes.outputs.frontend == 'true')
+    runs-on: arc-runner-set
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create deploy PR
+        env:
+          TAG: ${{ needs.set-tag.outputs.tag }}
+          PREFIX: ${{ needs.set-tag.outputs.pr_prefix }}
+          BACKEND_CHANGED: ${{ needs.changes.outputs.backend }}
+          FRONTEND_CHANGED: ${{ needs.changes.outputs.frontend }}
+        run: |
+          rm -rf /tmp/gitops
+          git clone https://x-access-token:${GITOPS_PAT}@github.com/${GITOPS_REPO}.git /tmp/gitops
+          cd /tmp/gitops
+
+          # Close any existing quiz deploy PRs
+          EXISTING_PRS=$(curl -s \
+            -H "Authorization: token ${GITOPS_PAT}" \
+            "https://api.github.com/repos/${GITOPS_REPO}/pulls?state=open&per_page=100" \
+            | python3 -c "
+          import json,sys
+          for pr in json.load(sys.stdin):
+              ref = pr.get('head',{}).get('ref','')
+              if ref.startswith('deploy/quiz-') or ref.startswith('release/quiz-'):
+                  print(pr['number'])
+          " 2>/dev/null || true)
+          for PR_NUM in $EXISTING_PRS; do
+            curl -s -X PATCH \
+              -H "Authorization: token ${GITOPS_PAT}" \
+              "https://api.github.com/repos/${GITOPS_REPO}/pulls/${PR_NUM}" \
+              -d '{"state":"closed"}' > /dev/null
+          done
+
+          BRANCH="${PREFIX}/quiz-${TAG}"
+          git checkout -b "${BRANCH}"
+
+          if [[ "$BACKEND_CHANGED" == "true" ]]; then
+            sed -i "s|amerenda/quiz:backend-[^ ]*|amerenda/quiz:backend-${TAG}|g" \
+              apps/quiz/backend-uat/deployment.yaml \
+              apps/quiz/backend/deployment.yaml
+          fi
+          if [[ "$FRONTEND_CHANGED" == "true" ]]; then
+            sed -i "s|amerenda/quiz:frontend-[^ ]*|amerenda/quiz:frontend-${TAG}|g" \
+              apps/quiz/frontend-uat/deployment.yaml \
+              apps/quiz/frontend/deployment.yaml
+          fi
+
+          git config user.name "amerenda-deploy-bot[bot]"
+          git config user.email "3192609+amerenda-deploy-bot[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet && exit 0
+          git commit -m "${PREFIX}: quiz ${TAG}"
+          git push origin "${BRANCH}"
+
+          COMMIT_MSG=$(git -C "${GITHUB_WORKSPACE}" log -1 --format='%s' 2>/dev/null || echo "")
+          NL=$'\n'
+          PR_BODY="**quiz ${TAG}**${NL}${NL}${COMMIT_MSG}${NL}${NL}Source: https://github.com/amerenda/quiz/commit/${GITHUB_SHA}"
+
+          PR_RESPONSE=$(curl -s -X POST \
+            -H "Authorization: token ${GITOPS_PAT}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/${GITOPS_REPO}/pulls" \
+            -d "$(jq -n \
+              --arg title "${PREFIX}: quiz ${TAG}" \
+              --arg body "${PR_BODY}" \
+              --arg head "${BRANCH}" \
+              --arg base "main" \
+              '{title: $title, body: $body, head: $head, base: $base}')")
+
+          PR_NUMBER=$(echo "$PR_RESPONSE" | python3 -c "import json,sys; print(json.load(sys.stdin)['number'])")
+          curl -s -X POST \
+            -H "Authorization: token ${GITOPS_PAT}" \
+            "https://api.github.com/repos/${GITOPS_REPO}/issues/${PR_NUMBER}/labels" \
+            -d '["deploy:quiz"]'
+          curl -s -X POST \
+            -H "Authorization: token ${GITOPS_PAT}" \
+            "https://api.github.com/repos/${GITOPS_REPO}/issues/${PR_NUMBER}/assignees" \
+            -d '{"assignees":["amerenda"]}'
+
+  notify-failure:
+    if: failure()
+    needs: [changes, build-amd64, build-arm64, manifest, deploy]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create GitHub Issue for build failure
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue create \
+            --repo "${{ github.repository }}" \
+            --title "CI failed: ${{ github.workflow }}" \
+            --body "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --label "ci-failure" || echo "Could not create issue"
