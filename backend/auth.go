@@ -25,13 +25,13 @@ type contextKey string
 const contextKeyUsername contextKey = "username"
 
 func initAuth() {
-	sessionSecret = []byte(strings.TrimSpace(os.Getenv("SESSION_SECRET")))
+	sessionSecret = []byte(os.Getenv("SESSION_SECRET"))
 	if len(sessionSecret) == 0 {
 		panic("SESSION_SECRET is required")
 	}
-	githubClientID = strings.TrimSpace(os.Getenv("GITHUB_CLIENT_ID"))
-	githubClientSecret = strings.TrimSpace(os.Getenv("GITHUB_CLIENT_SECRET"))
-	appOrigin = strings.TrimSpace(os.Getenv("APP_ORIGIN"))
+	githubClientID = os.Getenv("GITHUB_CLIENT_ID")
+	githubClientSecret = os.Getenv("GITHUB_CLIENT_SECRET")
+	appOrigin = os.Getenv("APP_ORIGIN")
 	if appOrigin == "" {
 		appOrigin = "https://quiz.amer.dev"
 	}
