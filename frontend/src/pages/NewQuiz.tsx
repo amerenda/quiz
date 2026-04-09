@@ -9,7 +9,9 @@ export function NewQuiz() {
   const [password, setPassword] = useState('')
   const [usePassword, setUsePassword] = useState(false)
   const [maxParticipants, setMaxParticipants] = useState(2)
+  const [title, setTitle] = useState('')
   const [shareURL, setShareURL] = useState('')
+  const [shareTitle, setShareTitle] = useState('')
   const [copied, setCopied] = useState(false)
 
   const createQuiz = useCreateQuiz()
@@ -30,9 +32,13 @@ export function NewQuiz() {
         categories: cats,
         password: usePassword ? password : undefined,
         max_participants: maxParticipants,
+        title: title || undefined,
       },
       {
-        onSuccess: (data) => setShareURL(data.share_url),
+        onSuccess: (data) => {
+          setShareURL(data.share_url)
+          setShareTitle(data.title)
+        },
       },
     )
   }
@@ -52,6 +58,7 @@ export function NewQuiz() {
               <Check className="w-6 h-6 text-green-700" />
             </div>
             <h2 className="text-xl font-bold text-gray-900 mb-2">Quiz Published</h2>
+            {shareTitle && <p className="text-gray-700 font-medium mb-1">{shareTitle}</p>}
             <p className="text-gray-500 text-sm mb-6">Share this link with your participants</p>
 
             <div className="flex items-center gap-2 bg-gray-50 border border-gray-200 rounded-lg p-3 mb-4">
@@ -76,7 +83,7 @@ export function NewQuiz() {
                 Fill it out now
               </button>
               <button
-                onClick={() => { setShareURL(''); setCategories(['', '', '']) }}
+                onClick={() => { setShareURL(''); setShareTitle(''); setTitle(''); setCategories(['', '', '']) }}
                 className="flex-1 border border-gray-200 text-gray-700 py-2.5 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors"
               >
                 Create another
@@ -142,6 +149,17 @@ export function NewQuiz() {
 
         <div className="bg-white border border-gray-200 rounded-xl p-6 mb-4">
           <h2 className="font-semibold text-gray-800 mb-4">Options</h2>
+
+          <div className="mb-4">
+            <label className="block text-sm text-gray-700 mb-1">Quiz title <span className="text-gray-400">(optional)</span></label>
+            <input
+              type="text"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="Auto-generated if left blank"
+              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-gray-300"
+            />
+          </div>
 
           <div className="mb-4">
             <label className="block text-sm text-gray-700 mb-1">Participants</label>

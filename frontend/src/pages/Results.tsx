@@ -1,4 +1,5 @@
 import { useParams, useNavigate } from 'react-router-dom'
+import { Lock } from 'lucide-react'
 import { useResults, useQuizStatus } from '../hooks/useApi'
 import type { Answer } from '../types'
 
@@ -26,6 +27,20 @@ export function Results() {
     return (
       <div className="min-h-screen flex items-center justify-center px-4">
         <p className="text-gray-400 text-sm">Loading…</p>
+      </div>
+    )
+  }
+
+  if (results.data?.hidden) {
+    return (
+      <div className="min-h-screen flex items-center justify-center px-4">
+        <div className="text-center max-w-sm">
+          <div className="w-12 h-12 bg-amber-100 rounded-full flex items-center justify-center mx-auto mb-4">
+            <Lock className="w-6 h-6 text-amber-600" />
+          </div>
+          <h2 className="text-xl font-bold text-gray-900 mb-2">Results Locked</h2>
+          <p className="text-gray-500 text-sm">{results.data.reason || 'An admin has locked these results.'}</p>
+        </div>
       </div>
     )
   }

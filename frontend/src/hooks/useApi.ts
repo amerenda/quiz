@@ -41,17 +41,29 @@ export function useQuizStatus(quizId: string, enabled = true) {
 export function useResults(quizId: string, enabled = true) {
   return useQuery<ResultsResponse>({
     queryKey: ['quiz-results', quizId],
-    queryFn: () => apiFetch(`/api/quizzes/${quizId}/results`),
+    queryFn: async () => {
+      const res = await fetch(`/api/quizzes/${quizId}/results`, { credentials: 'include' })
+      if (res.status === 423) {
+        const data = await res.json()
+        return { categories: [], hidden: true, reason: data.reason } as any
+      }
+      if (!res.ok) {
+        const text = await res.text().catch(() => res.statusText)
+        throw Object.assign(new Error(text), { status: res.status })
+      }
+      return res.json()
+    },
     enabled: !!quizId && enabled,
     retry: false,
   })
 }
 
 export function useCreateQuiz() {
-  return useMutation<{ id: string; share_url: string }, Error, {
+  return useMutation<{ id: string; share_url: string; title: string }, Error, {
     categories: string[]
     password?: string
     max_participants?: number
+    title?: string
   }>({
     mutationFn: (body) =>
       apiFetch('/api/quizzes', {
@@ -107,6 +119,19 @@ export function useDeleteQuiz() {
   return useMutation<void, Error, string>({
     mutationFn: (quizId) =>
       apiFetch(`/api/admin/quizzes/${quizId}`, { method: 'DELETE' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['admin-quizzes'] }),
+  })
+}
+
+export function useUpdateQuiz() {
+  const qc = useQueryClient()
+  return useMutation<void, Error, { id: string; hidden?: boolean; title?: string }>({
+    mutationFn: ({ id, ...body }) =>
+      apiFetch(`/api/admin/quizzes/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['admin-quizzes'] }),
   })
 }

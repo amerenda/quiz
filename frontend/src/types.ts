@@ -35,10 +35,14 @@ export interface CategoryResult {
 
 export interface ResultsResponse {
   categories: CategoryResult[]
+  hidden?: boolean
+  reason?: string
 }
 
 export interface AdminQuizSummary {
   id: string
+  title: string
+  hidden: boolean
   created_at: string
   expires_at: string
   max_participants: number

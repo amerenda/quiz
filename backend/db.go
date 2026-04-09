@@ -66,6 +66,9 @@ func migrateDB(ctx context.Context) error {
 			answer         TEXT NOT NULL CHECK (answer IN ('hard_no', 'soft_yes', 'emphatic_yes')),
 			UNIQUE(participant_id, category_id)
 		)`,
+		`ALTER TABLE quizzes ADD COLUMN IF NOT EXISTS title TEXT`,
+		`ALTER TABLE quizzes ADD COLUMN IF NOT EXISTS hidden BOOLEAN NOT NULL DEFAULT FALSE`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS quizzes_title_unique ON quizzes(lower(title)) WHERE title IS NOT NULL`,
 	}
 
 	for _, stmt := range statements {

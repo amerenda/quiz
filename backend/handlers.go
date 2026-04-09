@@ -1,7 +1,10 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
+	"math/rand"
 	"net/http"
 	"strings"
 	"time"
@@ -43,6 +46,17 @@ func handleCreateQuiz(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
+
+	title := strings.TrimSpace(req.Title)
+	if title == "" {
+		var err error
+		title, err = generateUniqueTitle(ctx)
+		if err != nil {
+			http.Error(w, "server error", http.StatusInternalServerError)
+			return
+		}
+	}
+
 	tx, err := db.Begin(ctx)
 	if err != nil {
 		http.Error(w, "server error", http.StatusInternalServerError)
@@ -52,8 +66,8 @@ func handleCreateQuiz(w http.ResponseWriter, r *http.Request) {
 
 	var quizID string
 	err = tx.QueryRow(ctx,
-		`INSERT INTO quizzes (password_hash, max_participants) VALUES ($1, $2) RETURNING id`,
-		passwordHash, req.MaxParticipants,
+		`INSERT INTO quizzes (title, password_hash, max_participants) VALUES ($1, $2, $3) RETURNING id`,
+		title, passwordHash, req.MaxParticipants,
 	).Scan(&quizID)
 	if err != nil {
 		http.Error(w, "server error", http.StatusInternalServerError)
@@ -82,6 +96,7 @@ func handleCreateQuiz(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, CreateQuizResponse{
 		ID:       quizID,
 		ShareURL: appOrigin + "/quiz/" + quizID,
+		Title:    title,
 	})
 }
 
@@ -327,6 +342,32 @@ func handleGetResults(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check if results are hidden
+	var hidden bool
+	db.QueryRow(ctx, `SELECT hidden FROM quizzes WHERE id = $1`, quizID).Scan(&hidden)
+	if hidden {
+		writeJSON(w, 423, map[string]any{"hidden": true, "reason": "results locked by admin"})
+		return
+	}
+
+	// Check if any participant said yes to everything (no hard_no answers)
+	var allYesExists bool
+	db.QueryRow(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM participants p
+			WHERE p.quiz_id = $1
+			  AND p.submitted_at IS NOT NULL
+			  AND NOT EXISTS (
+			      SELECT 1 FROM responses r WHERE r.participant_id = p.id AND r.answer = 'hard_no'
+			  )
+		)
+	`, quizID).Scan(&allYesExists)
+	if allYesExists {
+		db.Exec(ctx, `UPDATE quizzes SET hidden = true WHERE id = $1`, quizID)
+		writeJSON(w, 423, map[string]any{"hidden": true, "reason": "one participant answered yes to everything"})
+		return
+	}
+
 	rows, err := db.Query(ctx, `
 		SELECT c.id, c.text, p.name, res.answer
 		FROM categories c
@@ -388,7 +429,7 @@ func handleAdminListQuizzes(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := db.Query(ctx, `
 		SELECT
-			q.id, q.created_at, q.expires_at, q.max_participants,
+			q.id, COALESCE(q.title, ''), q.hidden, q.created_at, q.expires_at, q.max_participants,
 			q.password_hash IS NOT NULL,
 			COUNT(DISTINCT p.id),
 			COUNT(DISTINCT CASE WHEN p.submitted_at IS NOT NULL THEN p.id END)
@@ -407,7 +448,7 @@ func handleAdminListQuizzes(w http.ResponseWriter, r *http.Request) {
 	quizzes := []AdminQuizSummary{}
 	for rows.Next() {
 		var q AdminQuizSummary
-		if err := rows.Scan(&q.ID, &q.CreatedAt, &q.ExpiresAt, &q.MaxParticipants,
+		if err := rows.Scan(&q.ID, &q.Title, &q.Hidden, &q.CreatedAt, &q.ExpiresAt, &q.MaxParticipants,
 			&q.HasPassword, &q.ParticipantCount, &q.SubmittedCount); err != nil {
 			continue
 		}
@@ -433,4 +474,79 @@ func handleAdminDeleteQuiz(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": true})
+}
+
+// PATCH /api/admin/quizzes/:id
+func handleAdminUpdateQuiz(w http.ResponseWriter, r *http.Request) {
+	quizID := chi.URLParam(r, "id")
+	ctx := r.Context()
+
+	var req UpdateQuizRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+
+	if req.Hidden != nil {
+		if _, err := db.Exec(ctx, `UPDATE quizzes SET hidden = $1 WHERE id = $2`, *req.Hidden, quizID); err != nil {
+			http.Error(w, "server error", http.StatusInternalServerError)
+			return
+		}
+	}
+
+	if req.Title != nil {
+		trimmed := strings.TrimSpace(*req.Title)
+		if trimmed != "" {
+			// Check uniqueness (excluding this quiz)
+			var exists bool
+			db.QueryRow(ctx,
+				`SELECT EXISTS(SELECT 1 FROM quizzes WHERE lower(title) = lower($1) AND id != $2)`,
+				trimmed, quizID,
+			).Scan(&exists)
+			if exists {
+				writeJSON(w, http.StatusConflict, map[string]any{"error": "title already exists"})
+				return
+			}
+			if _, err := db.Exec(ctx, `UPDATE quizzes SET title = $1 WHERE id = $2`, trimmed, quizID); err != nil {
+				http.Error(w, "server error", http.StatusInternalServerError)
+				return
+			}
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+var titleAdjectives = []string{
+	"amber", "bold", "calm", "daring", "eager", "fierce", "gentle",
+	"happy", "icy", "jolly", "kind", "lively", "merry", "noble",
+	"odd", "proud", "quick", "radiant", "sleek", "swift",
+	"tall", "unique", "vibrant", "warm", "young", "zesty",
+}
+
+var titleNouns = []string{
+	"bear", "bird", "crane", "dart", "echo", "flame", "grove",
+	"hare", "iris", "jade", "kite", "lark", "mist", "nest",
+	"opal", "pine", "quill", "reef", "sage", "tide",
+	"vale", "wave", "yew", "zeal",
+}
+
+func generateUniqueTitle(ctx context.Context) (string, error) {
+	for i := 0; i < 30; i++ {
+		adj := titleAdjectives[rand.Intn(len(titleAdjectives))]
+		noun := titleNouns[rand.Intn(len(titleNouns))]
+		candidate := adj + "-" + noun
+
+		var exists bool
+		if err := db.QueryRow(ctx,
+			`SELECT EXISTS(SELECT 1 FROM quizzes WHERE lower(title) = lower($1))`,
+			candidate,
+		).Scan(&exists); err != nil {
+			continue
+		}
+		if !exists {
+			return candidate, nil
+		}
+	}
+	return fmt.Sprintf("quiz-%d", time.Now().Unix()%99999), nil
 }

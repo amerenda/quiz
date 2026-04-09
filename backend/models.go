@@ -15,11 +15,13 @@ type CreateQuizRequest struct {
 	Categories      []string `json:"categories"`
 	Password        string   `json:"password,omitempty"`
 	MaxParticipants int      `json:"max_participants,omitempty"`
+	Title           string   `json:"title,omitempty"`
 }
 
 type CreateQuizResponse struct {
 	ID       string `json:"id"`
 	ShareURL string `json:"share_url"`
+	Title    string `json:"title"`
 }
 
 type QuizInfoResponse struct {
@@ -74,14 +76,23 @@ type CategoryResult struct {
 
 type ResultsResponse struct {
 	Categories []CategoryResult `json:"categories"`
+	Hidden     bool             `json:"hidden,omitempty"`
+	Reason     string           `json:"reason,omitempty"`
 }
 
 type AdminQuizSummary struct {
 	ID               string    `json:"id"`
+	Title            string    `json:"title"`
+	Hidden           bool      `json:"hidden"`
 	CreatedAt        time.Time `json:"created_at"`
 	ExpiresAt        time.Time `json:"expires_at"`
 	MaxParticipants  int       `json:"max_participants"`
 	ParticipantCount int       `json:"participant_count"`
 	SubmittedCount   int       `json:"submitted_count"`
 	HasPassword      bool      `json:"has_password"`
+}
+
+type UpdateQuizRequest struct {
+	Title  *string `json:"title"`
+	Hidden *bool   `json:"hidden"`
 }
