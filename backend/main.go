@@ -11,6 +11,26 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 )
 
+func startExpirationCleanup(ctx context.Context) {
+	go func() {
+		ticker := time.NewTicker(1 * time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				result, err := db.Exec(ctx, `DELETE FROM quizzes WHERE expires_at < NOW()`)
+				if err != nil {
+					log.Printf("expiration cleanup error: %v", err)
+				} else if result.RowsAffected() > 0 {
+					log.Printf("expiration cleanup: deleted %d expired quizzes", result.RowsAffected())
+				}
+			}
+		}
+	}()
+}
+
 func main() {
 	ctx := context.Background()
 
@@ -20,6 +40,8 @@ func main() {
 		log.Fatalf("database init failed: %v", err)
 	}
 	defer db.Close()
+
+	startExpirationCleanup(ctx)
 
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)

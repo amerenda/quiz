@@ -1,6 +1,6 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Trash2, Lock, ArrowLeft } from 'lucide-react'
+import { Trash2, Lock, ArrowLeft, Copy, Check } from 'lucide-react'
 import { useAuth, useAdminQuizzes, useDeleteQuiz } from '../hooks/useApi'
 
 function formatDate(iso: string) {
@@ -12,6 +12,13 @@ export function Admin() {
   const auth = useAuth()
   const quizzes = useAdminQuizzes()
   const deleteQuiz = useDeleteQuiz()
+  const [copiedId, setCopiedId] = useState<string | null>(null)
+
+  const copyUrl = (id: string) => {
+    navigator.clipboard.writeText(window.location.origin + '/quiz/' + id)
+    setCopiedId(id)
+    setTimeout(() => setCopiedId(null), 1500)
+  }
 
   useEffect(() => {
     if (auth.data && !auth.data.authenticated) {
@@ -81,6 +88,7 @@ export function Admin() {
                     <th className="text-center px-4 py-3 text-gray-600 font-medium">Submitted</th>
                     <th className="text-center px-4 py-3 text-gray-600 font-medium"></th>
                     <th className="px-4 py-3"></th>
+                    <th className="px-4 py-3"></th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
@@ -100,9 +108,19 @@ export function Admin() {
                       </td>
                       <td className="px-4 py-3 text-right">
                         <button
+                          onClick={() => copyUrl(q.id)}
+                          className="p-1.5 text-gray-400 hover:text-blue-500 transition-colors"
+                          title="Copy quiz URL"
+                        >
+                          {copiedId === q.id ? <Check className="w-4 h-4 text-green-500" /> : <Copy className="w-4 h-4" />}
+                        </button>
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <button
                           onClick={() => handleDelete(q.id)}
                           disabled={deleteQuiz.isPending}
                           className="p-1.5 text-gray-400 hover:text-red-500 transition-colors disabled:opacity-50"
+                          title="Delete quiz"
                         >
                           <Trash2 className="w-4 h-4" />
                         </button>
